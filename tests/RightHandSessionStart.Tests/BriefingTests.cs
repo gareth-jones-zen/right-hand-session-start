@@ -134,6 +134,11 @@ public sealed class BriefingTests : IDisposable
         var json = JsonNode.Parse(output)!["hookSpecificOutput"]!;
         Assert.Equal("SessionStart", (string?)json["hookEventName"]);
         Assert.StartsWith("Session start, Wed 18 Nov 19:38\n\n## preps (1)", (string?)json["additionalContext"]);
+        Assert.StartsWith("Session start, Wed 18 Nov 19:38\n\n## preps (1)", (string?)JsonNode.Parse(output)!["systemMessage"]);   // shown on screen too
+
+        File.WriteAllText(Path.Combine(dir, "config.toml"), "visible = false\n" + Settings);
+        Assert.Null(JsonNode.Parse(Run("{}", "hook").Out)!["systemMessage"]);
+        File.WriteAllText(Path.Combine(dir, "config.toml"), Settings);
 
         env["CLAUDE_HEADLESS"] = "1";
         Assert.Equal((0, ""), (Run("{}", "hook").Code, Run("{}", "hook").Out));

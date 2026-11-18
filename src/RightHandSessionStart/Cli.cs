@@ -119,7 +119,7 @@ public static class Cli
     }
 
     /// <summary>A Claude Code SessionStart hook: the briefing as additionalContext, so it's in front of Claude when the
-    /// session opens. In a tool's headless run (a skip_env variable is set: CLAUDE_HEADLESS, from background-tools-lib's
+    /// session opens, and (visible, the default) as a systemMessage, so the person sees it too. In a tool's headless run (a skip_env variable is set: CLAUDE_HEADLESS, from background-tools-lib's
     /// ClaudeHeadless) it says nothing. It never blocks a session: settings it can't read, or anything else that goes
     /// wrong, become a line in the context saying so, and it exits 0.</summary>
     private static int Hook(string? configPath, CliHost host)
@@ -132,11 +132,13 @@ public static class Cli
         {
         }
         string text;
+        var visible = true;
         try
         {
             var config = RightHandSessionStart.Config.Load(configPath, host.Env);
             if (config.SkipEnv.Any(name => host.Env(name) is { Length: > 0 }))
                 return 0;
+            visible = config.Visible;
             text = Briefing.Text(config, Briefing.Gather(config, host.Run), host.Now());
         }
         catch (Exception error)
@@ -149,6 +151,8 @@ public static class Cli
         {
             ["hookSpecificOutput"] = new JsonObject { ["hookEventName"] = "SessionStart", ["additionalContext"] = text },
         };
+        if (visible)
+            output["systemMessage"] = text.TrimEnd('\n');   // shown to the person, on screen (0.2.0)
         host.Out.Write(Write(output) + "\n");
         return 0;
     }

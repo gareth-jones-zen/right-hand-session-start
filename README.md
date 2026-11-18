@@ -78,6 +78,8 @@ so it's in the assistant's context when the session opens.
 - **Headless runs are left alone.** When one of `skip_env`'s variables is set (by default `CLAUDE_HEADLESS`, which
   background-tools-lib's ClaudeHeadless and the Python claude-headless set for every run they start), it says
   nothing: a tool's job drafting a summary in the same project has no use for your briefing.
+- **You see it too** (`visible = true`, the default): the same text comes up on screen as the session opens, as a
+  `systemMessage`. With `visible = false` it goes only to Claude.
 - **It never blocks a session.** Settings it can't read, or anything else that goes wrong, become one line in the
   context saying so, and it exits 0.
 
@@ -100,6 +102,7 @@ base = "base-config.toml"          # optional: settings shared with other tools 
 root = ".."                        # file paths are shown relative to it (default: this folder)
 title = "Session start, {now}"     # {now}: "Wed 18 Nov 19:38"
 skip_env = ["CLAUDE_HEADLESS"]     # hook: say nothing when one of these is set
+visible = true                     # hook: show you the briefing on screen too, not only Claude
 
 [[section]]
 kind = "command"
