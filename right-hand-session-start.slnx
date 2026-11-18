@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="src/RightHandSessionStart/RightHandSessionStart.csproj" />
+  <Project Path="src/RightHandSessionStart.Console/RightHandSessionStart.Console.csproj" />
+  <Project Path="src/RightHandSessionStart.Background/RightHandSessionStart.Background.csproj" />
+
+  <Project Path="tests/RightHandSessionStart.Tests/RightHandSessionStart.Tests.csproj" />
+</Solution>
