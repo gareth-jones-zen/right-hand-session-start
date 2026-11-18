@@ -132,14 +132,17 @@ public static class Cli
         {
         }
         string text;
-        var visible = true;
+        var visible = "headlines";
+        string? headlines = null;
         try
         {
             var config = RightHandSessionStart.Config.Load(configPath, host.Env);
             if (config.SkipEnv.Any(name => host.Env(name) is { Length: > 0 }))
                 return 0;
             visible = config.Visible;
-            text = Briefing.Text(config, Briefing.Gather(config, host.Run), host.Now());
+            var parts = Briefing.Gather(config, host.Run);
+            text = Briefing.Text(config, parts, host.Now());
+            headlines = Briefing.Headlines(config, parts, host.Now());
         }
         catch (Exception error)
         {
@@ -151,8 +154,8 @@ public static class Cli
         {
             ["hookSpecificOutput"] = new JsonObject { ["hookEventName"] = "SessionStart", ["additionalContext"] = text },
         };
-        if (visible)
-            output["systemMessage"] = text.TrimEnd('\n');   // shown to the person, on screen (0.2.0)
+        if (visible != "none")   // shown to the person, on screen: the headlines (0.3.0) or the whole briefing (0.2.0)
+            output["systemMessage"] = (visible == "full" || headlines is null ? text : headlines).TrimEnd('\n');
         host.Out.Write(Write(output) + "\n");
         return 0;
     }

@@ -44,7 +44,7 @@ public sealed class Config
         "# base = \"base-config.toml\"     # settings shared with other tools\n" +
         "# root = \"..\"                   # file paths are shown relative to it (default: this folder)\n" +
         "# skip_env = [\"CLAUDE_HEADLESS\"] # hook: say nothing when one of these is set (a tool's headless run)\n" +
-        "# visible = true                 # hook: show you the briefing too, not only Claude\n" +
+        "# visible = \"headlines\"        # hook: what you see on screen: headlines, full or none (Claude gets it all)\n" +
         "\n" +
         "[[section]]\n" +
         "kind = \"command\"                # run a program, show what it prints\n" +
@@ -53,14 +53,18 @@ public sealed class Config
         "heading = \"each\"                # inline, above, each or none\n" +
         "drop_lines = [\"Nothing due.\"]   # lines that mean there's nothing to say\n";
 
-    public static readonly string[] KnownKeys = ["root", "skip_env", "title", "visible", "section"];
+    public static readonly string[] KnownKeys = ["root", "skip_env", "title", "visible", "footer", "section"];
 
     public required string Path { get; init; }
     public required string Root { get; init; }
     public string Title { get; init; } = "Session start, {now}";
 
-    /// <summary>hook: also show the briefing to the person, on screen, as well as giving it to Claude (0.2.0).</summary>
-    public bool Visible { get; init; } = true;
+    /// <summary>hook: what the person sees on screen, as well as Claude getting the whole briefing: "headlines" (a
+    /// line per section, 0.3.0), "full" (the briefing, 0.2.0's true) or "none".</summary>
+    public string Visible { get; init; } = "headlines";
+
+    /// <summary>hook: a line under the headlines (what to do for the rest, say).</summary>
+    public string Footer { get; init; } = "";
     public IReadOnlyList<string> SkipEnv { get; init; } = ["CLAUDE_HEADLESS"];
     public IReadOnlyList<Section> Sections { get; init; } = [];
 
@@ -213,7 +217,14 @@ public sealed class Config
             Path = full,
             Root = raw.TryGetValue("root", out var r) ? r is string { Length: > 0 } root ? Resolve(root) : throw new UsageException($"{full}: root should be text.") : dir,
             Title = raw.TryGetValue("title", out var ti) ? ti as string ?? throw new UsageException($"{full}: title should be text.") : "Session start, {now}",
-            Visible = !raw.TryGetValue("visible", out var vi) || (vi is bool b ? b : throw new UsageException($"{full}: visible should be true or false.")),
+            Visible = !raw.TryGetValue("visible", out var vi) ? "headlines" : vi switch
+            {
+                true => "full",
+                false => "none",
+                "headlines" or "full" or "none" => (string)vi,
+                _ => throw new UsageException($"{full}: visible should be headlines, full or none."),
+            },
+            Footer = raw.TryGetValue("footer", out var fo) ? fo as string ?? throw new UsageException($"{full}: footer should be text.") : "",
             SkipEnv = raw.TryGetValue("skip_env", out var se)
                 ? se is TomlArray names && names.All(x => x is string) ? names.Cast<string>().ToList() : throw new UsageException($"{full}: skip_env should be a list of variable names.")
                 : ["CLAUDE_HEADLESS"],

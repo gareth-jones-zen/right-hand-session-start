@@ -78,8 +78,10 @@ so it's in the assistant's context when the session opens.
 - **Headless runs are left alone.** When one of `skip_env`'s variables is set (by default `CLAUDE_HEADLESS`, which
   background-tools-lib's ClaudeHeadless and the Python claude-headless set for every run they start), it says
   nothing: a tool's job drafting a summary in the same project has no use for your briefing.
-- **You see it too** (`visible = true`, the default): the same text comes up on screen as the session opens, as a
-  `systemMessage`. With `visible = false` it goes only to Claude.
+- **You see the headlines** (`visible = "headlines"`, the default, 0.3.0): a line per section comes up on screen as
+  the session opens (a `systemMessage`), with `footer` under them if you set one; Claude gets the whole briefing. The
+  detail is written for an assistant (ids, guidance), so ask it for the briefing, or have your project's CLAUDE.md
+  say to open the first reply with it. `visible = "full"` shows you the whole briefing; `"none"`, nothing.
 - **It never blocks a session.** Settings it can't read, or anything else that goes wrong, become one line in the
   context saying so, and it exits 0.
 
@@ -102,7 +104,8 @@ base = "base-config.toml"          # optional: settings shared with other tools 
 root = ".."                        # file paths are shown relative to it (default: this folder)
 title = "Session start, {now}"     # {now}: "Wed 18 Nov 19:38"
 skip_env = ["CLAUDE_HEADLESS"]     # hook: say nothing when one of these is set
-visible = true                     # hook: show you the briefing on screen too, not only Claude
+visible = "headlines"              # hook: what you see on screen: headlines, full or none (Claude gets it all)
+footer = "Say anything for the full briefing."   # hook: a line under the headlines
 
 [[section]]
 kind = "command"

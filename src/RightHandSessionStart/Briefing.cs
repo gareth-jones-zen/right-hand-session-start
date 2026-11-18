@@ -76,6 +76,52 @@ public static partial class Briefing
         return text.ToString().TrimEnd('\n') + "\n";
     }
 
+    /// <summary>A line per section for the person (0.3.0): its first line, or for a section with its own "## "
+    /// headings (heading = none) those headings run together, or for heading = each a line per line; each cut short
+    /// at 110 characters (before a "(" if there is one). Claude gets the whole briefing.</summary>
+    public static string Headlines(Config config, IReadOnlyList<Part> parts, DateTime now)
+    {
+        var text = new StringBuilder();
+        text.Append(config.Title.Replace("{now}", now.ToString("ddd dd MMM HH:mm", CultureInfo.InvariantCulture), StringComparison.Ordinal)).Append('\n');
+        foreach (var part in parts.Where(p => !p.Empty))
+        {
+            var name = part.Section.Name.Length > 0 ? char.ToUpperInvariant(part.Section.Name[0]) + part.Section.Name[1..] : "";
+            if (part.Error is not null)
+            {
+                text.Append($"- {name}: couldn't read it\n");
+                continue;
+            }
+            var heading = part.Section.Kind == "command" ? part.Section.Heading : "inline";
+            if (heading == "none")
+            {
+                var heads = part.Lines.Where(l => l.StartsWith("## ", StringComparison.Ordinal)).Select(l => Short(l[3..])).ToList();
+                text.Append($"- {name}: {(heads.Count > 0 ? string.Join(", ", heads) : Short(part.Lines[0]))}\n");
+            }
+            else if (heading == "each")
+                foreach (var line in part.Lines)
+                    text.Append($"- {name}: {Short(line)}\n");
+            else
+                text.Append($"- {name}: {Short(part.Lines[0])}\n");
+        }
+        if (config.Footer.Length > 0)
+            text.Append(config.Footer).Append('\n');
+        return text.ToString();
+    }
+
+    [GeneratedRegex(@"\s{2,}", RegexOptions.CultureInvariant)]
+    private static partial Regex Spaces();
+
+    /// <summary>A line squeezed for a headline: runs of spaces as one, at most 110 characters, cut before a "(" if
+    /// that's where it overflows, and a heading's ":" detail ("preps (9): 3 older...") kept.</summary>
+    internal static string Short(string line)
+    {
+        line = Spaces().Replace(line.Trim(), " ");
+        if (line.Length <= 110)
+            return line;
+        var paren = line.IndexOf(" (", 40, StringComparison.Ordinal);
+        return paren > 0 && paren <= 110 ? line[..paren] : line[..107].TrimEnd() + "...";
+    }
+
     // ---- command --------------------------------------------------------------------------------------------------
 
     internal static Part Command(Config config, Section section, CommandRunner run)

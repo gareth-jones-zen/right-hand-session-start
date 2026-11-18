@@ -134,10 +134,20 @@ public sealed class BriefingTests : IDisposable
         var json = JsonNode.Parse(output)!["hookSpecificOutput"]!;
         Assert.Equal("SessionStart", (string?)json["hookEventName"]);
         Assert.StartsWith("Session start, Wed 18 Nov 19:38\n\n## preps (1)", (string?)json["additionalContext"]);
-        Assert.StartsWith("Session start, Wed 18 Nov 19:38\n\n## preps (1)", (string?)JsonNode.Parse(output)!["systemMessage"]);   // shown on screen too
+        Assert.Equal(   // on screen: a line per section (0.3.0)
+            "Session start, Wed 18 Nov 19:38\n" +
+            "- Pending: preps (1)\n" +
+            "- Mail triage: 3 emails and 0 invites to review; 1 deleted\n" +
+            "- Summary drafts to review: 2, oldest 2026-11-12\n" +
+            "- Review ledger: 2 open question(s)\n" +
+            "- Watchdog: 1 problem(s)", (string?)JsonNode.Parse(output)!["systemMessage"]);
 
+        File.WriteAllText(Path.Combine(dir, "config.toml"), "visible = \"full\"\nfooter = \"x\"\n" + Settings);
+        Assert.StartsWith("Session start, Wed 18 Nov 19:38\n\n## preps (1)", (string?)JsonNode.Parse(Run("{}", "hook").Out)!["systemMessage"]);
         File.WriteAllText(Path.Combine(dir, "config.toml"), "visible = false\n" + Settings);
         Assert.Null(JsonNode.Parse(Run("{}", "hook").Out)!["systemMessage"]);
+        File.WriteAllText(Path.Combine(dir, "config.toml"), "footer = \"Say anything for the rest.\"\n" + Settings);
+        Assert.EndsWith("- Watchdog: 1 problem(s)\nSay anything for the rest.", (string?)JsonNode.Parse(Run("{}", "hook").Out)!["systemMessage"]);
         File.WriteAllText(Path.Combine(dir, "config.toml"), Settings);
 
         env["CLAUDE_HEADLESS"] = "1";
@@ -160,6 +170,19 @@ public sealed class BriefingTests : IDisposable
         Assert.Equal(["2, oldest 2026-11-12", "   meetings/a/summaries/2026-11-12-long.md", "   meetings/b/c/summaries/2026-11-16.md"],
             sections[2]!["lines"]!.AsArray().Select(n => (string?)n));
         Assert.Empty(sections[5]!["lines"]!.AsArray());
+    }
+
+    [Theory]
+    [InlineData("short line", "short line")]
+    [InlineData("a   b    c", "a b c")]
+    public void Headlines_squeeze_lines(string line, string expected) => Assert.Equal(expected, Briefing.Short(line));
+
+    [Fact]
+    public void A_long_headline_is_cut_before_its_bracket()
+    {
+        var mail = "28 emails and 1 invite to review; 24 deleted by the rules since the last clear (15 Cancelled meetings, 2 Salesforce technical notices)";
+        Assert.Equal("28 emails and 1 invite to review; 24 deleted by the rules since the last clear", Briefing.Short(mail));
+        Assert.Equal(new string('x', 107) + "...", Briefing.Short(new string('x', 200)));
     }
 
     [Theory]
