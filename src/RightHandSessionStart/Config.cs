@@ -21,9 +21,15 @@ public sealed class Section
     public IReadOnlyList<string> DropLines { get; init; } = [];
     public int TimeoutSeconds { get; init; } = 120;
 
+    /// <summary>Any kind: "always", or "away" to show it only in the first session after time away (0.4.0).</summary>
+    public string When { get; init; } = "always";
+
     // files
     public IReadOnlyList<string> Files { get; init; } = [];
     public IReadOnlyDictionary<string, string> Where { get; init; } = new Dictionary<string, string>();
+
+    /// <summary>Only files whose name's date is on or after the previous session's day (0.4.0).</summary>
+    public bool Since { get; init; }
 
     // list
     public string? File { get; init; }
@@ -45,6 +51,10 @@ public sealed class Config
         "# root = \"..\"                   # file paths are shown relative to it (default: this folder)\n" +
         "# skip_env = [\"CLAUDE_HEADLESS\"] # hook: say nothing when one of these is set (a tool's headless run)\n" +
         "# visible = \"headlines\"        # hook: what you see on screen: headlines, full or none (Claude gets it all)\n" +
+        "# state_file = \"state.json\"     # where each session's start is recorded (default: %LOCALAPPDATA%\\right-hand-session-start)\n" +
+        "\n" +
+        "# [away]\n" +
+        "# after_working_days = 3        # the first session after this many weekdays without one is \"away\"\n" +
         "\n" +
         "[[section]]\n" +
         "kind = \"command\"                # run a program, show what it prints\n" +
@@ -53,7 +63,14 @@ public sealed class Config
         "heading = \"each\"                # inline, above, each or none\n" +
         "drop_lines = [\"Nothing due.\"]   # lines that mean there's nothing to say\n";
 
-    public static readonly string[] KnownKeys = ["root", "skip_env", "title", "visible", "footer", "section"];
+    public static readonly string[] KnownKeys = ["root", "skip_env", "title", "visible", "footer", "section", "state_file", "away"];
+
+    /// <summary>Where the hook records each interactive session's start (0.4.0).</summary>
+    public required string StateFile { get; init; }
+
+    /// <summary>[away] after_working_days: the first session after at least this many weekdays without one is in away
+    /// mode (0.4.0).</summary>
+    public int AwayAfterWorkingDays { get; init; } = 3;
 
     public required string Path { get; init; }
     public required string Root { get; init; }
@@ -155,15 +172,18 @@ public sealed class Config
                 var kind = Text(table, "kind", where);
                 string[] keys = kind switch
                 {
-                    "command" => ["kind", "name", "run", "ok_exit", "heading", "drop_lines", "timeout_seconds"],
-                    "files" => ["kind", "name", "files", "where"],
-                    "list" => ["kind", "name", "file", "under", "show", "text"],
+                    "command" => ["kind", "name", "when", "run", "ok_exit", "heading", "drop_lines", "timeout_seconds"],
+                    "files" => ["kind", "name", "when", "files", "where", "since"],
+                    "list" => ["kind", "name", "when", "file", "under", "show", "text"],
                     _ => throw Bad(where, $"kind should be command, files or list, not '{kind}'"),
                 };
                 foreach (var key in table.Keys)
                     if (!keys.Contains(key))
                         throw Bad(where, $"has an unknown setting '{key}' (a {kind} section knows: {string.Join(", ", keys.Skip(1))})");
                 var name = Text(table, "name", where);
+                var when = Text(table, "when", where, "always");
+                if (when is not ("always" or "away"))
+                    throw Bad(where, $"when should be always or away, not '{when}'");
                 switch (kind)
                 {
                     case "command":
@@ -181,7 +201,7 @@ public sealed class Config
                             : 120;
                         sections.Add(new Section
                         {
-                            Kind = kind, Name = name, Heading = heading, OkExit = ok, TimeoutSeconds = timeout,
+                            Kind = kind, Name = name, When = when, Heading = heading, OkExit = ok, TimeoutSeconds = timeout,
                             // An argument with a slash is a path, relative to this file; anything else (a program
                             // on the PATH, an option, a word) only has its variables expanded.
                             Run = run.Select(a => a.Contains('/') || a.Contains('\\') ? Resolve(a) : Expand(a)).ToList(),
@@ -197,7 +217,12 @@ public sealed class Config
                             foreach (var (key, value) in wt)
                                 match[key] = (string)value!;
                         }
-                        sections.Add(new Section { Kind = kind, Name = name, Files = Texts(table, "files", where, required: true).Select(Resolve).ToList(), Where = match });
+                        var since = table.TryGetValue("since", out var si) ? si as bool? ?? throw Bad(where, "since should be true or false") : false;
+                        sections.Add(new Section
+                        {
+                            Kind = kind, Name = name, When = when, Files = Texts(table, "files", where, required: true).Select(Resolve).ToList(), Where = match,
+                            Since = since,
+                        });
                         break;
                     default:
                         var show = Text(table, "show", where, "count");
@@ -205,7 +230,7 @@ public sealed class Config
                             throw Bad(where, $"show should be count or list, not '{show}'");
                         sections.Add(new Section
                         {
-                            Kind = kind, Name = name, File = Resolve(Text(table, "file", where)), Under = Text(table, "under", where),
+                            Kind = kind, Name = name, When = when, File = Resolve(Text(table, "file", where)), Under = Text(table, "under", where),
                             Show = show, Text = table.TryGetValue("text", out _) ? Text(table, "text", where) : "",
                         });
                         break;
@@ -229,9 +254,34 @@ public sealed class Config
                 ? se is TomlArray names && names.All(x => x is string) ? names.Cast<string>().ToList() : throw new UsageException($"{full}: skip_env should be a list of variable names.")
                 : ["CLAUDE_HEADLESS"],
             Sections = sections,
+            StateFile = raw.TryGetValue("state_file", out var sf)
+                ? sf is string { Length: > 0 } state ? Resolve(state) : throw new UsageException($"{full}: state_file should be text.")
+                : DefaultState(vars),
+            AwayAfterWorkingDays = AwayDays(raw, full),
             Resolve = Resolve,
             Expand = Expand,
         };
+    }
+
+    /// <summary>%LOCALAPPDATA%/right-hand-session-start/state.json.</summary>
+    public static string DefaultState(Func<string, string?> env)
+    {
+        var local = env("LOCALAPPDATA");
+        return PyPath.Pure(System.IO.Path.Combine(string.IsNullOrEmpty(local) ? PyPath.Home(env) : local, "right-hand-session-start", "state.json"));
+    }
+
+    private static int AwayDays(TomlTable raw, string full)
+    {
+        if (!raw.TryGetValue("away", out var a))
+            return 3;
+        if (a is not TomlTable away)
+            throw new UsageException($"{full}: away should be an [away] table.");
+        foreach (var key in away.Keys)
+            if (key != "after_working_days")
+                throw new UsageException($"{full}: [away] has an unknown setting '{key}' (known: after_working_days).");
+        return !away.TryGetValue("after_working_days", out var d) ? 3
+            : d is long days && days is >= 1 and <= 366 ? (int)days
+            : throw new UsageException($"{full}: [away] after_working_days should be a whole number of weekdays, 1 to 366.");
     }
 
     public static string CreateDefault(string? path, Func<string, string?>? env = null)

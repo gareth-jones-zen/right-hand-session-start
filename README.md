@@ -85,10 +85,29 @@ so it's in the assistant's context when the session opens.
 - **It never blocks a session.** Settings it can't read, or anything else that goes wrong, become one line in the
   context saying so, and it exits 0.
 
+## Away mode (0.4.0)
+
+**The first session after a few days away is a different session:** a week or three of the tools working without you
+leaves more than the ordinary briefing can say well, and the first thing to know is what kept running, not every item.
+So the hook records when each interactive session starts (`state_file`; a headless run, as above, records nothing),
+and when the gap since the last one is at least `[away] after_working_days` weekdays (3 by default; the days between,
+neither counted, so a weekend alone never is), the session is in **away mode**:
+
+- the briefing's first line says so: `First session since Tue 15 Dec: 13 weekdays` (on screen too);
+- **sections marked `when = "away"` are shown only then**: a pointer to a return pack, say;
+- **`{since}` in a command's arguments is the last session's day** (`yyyy-mm-dd`; today if none is recorded), so a tool
+  can summarise since then rather than since its own last clear. It's filled in every session, away or not;
+- **a `files` section with `since = true`** lists only files whose name's date is on or after that day.
+
+**The rest of that day stays in away mode** (a `/clear` on the first morning back gives the same briefing); the next day
+is ordinary. Only weekdays count, as the tool knows nothing of your calendar: a bank holiday is a weekday. `show` reads
+the record and never writes it, so trying it changes nothing; `show --away` shows a briefing as away mode would.
+
 ## Commands
 
 ```
-right-hand-session-start show        the briefing (--json: a section at a time, with its lines and any error)
+right-hand-session-start show        the briefing (--json: a section at a time, with its lines and any error, and the
+                                     away mode; --away: as the first session after time away would show it)
 right-hand-session-start hook        for a Claude Code SessionStart hook (above)
 right-hand-session-start config      create the settings file (if missing) and say where it is
 ```
@@ -106,6 +125,10 @@ title = "Session start, {now}"     # {now}: "Wed 18 Nov 19:38"
 skip_env = ["CLAUDE_HEADLESS"]     # hook: say nothing when one of these is set
 visible = "headlines"              # hook: what you see on screen: headlines, full or none (Claude gets it all)
 footer = "Say anything for the full briefing."   # hook: a line under the headlines
+state_file = "%LOCALAPPDATA%/right-hand-session-start/state.json"   # each session's start (this is the default)
+
+[away]
+after_working_days = 3             # the first session after at least this many weekdays without one is in away mode
 
 [[section]]
 kind = "command"
@@ -122,6 +145,13 @@ kind = "files"
 name = "summary drafts to review"
 files = ["../meetings/**/summaries/*.md"]   # * and ? within a folder, ** for any number of folders
 where = { status = "draft" }       # frontmatter fields it must have (only the frontmatter is read, all of it)
+
+[[section]]
+kind = "files"
+name = "return pack"
+when = "away"                      # any section: shown only in away mode (default "always")
+files = ["../reviews/re-entry/????-??-??.md"]
+since = true                       # files: only those dated (by name) on or after the last session's day
 
 [[section]]
 kind = "list"

@@ -19,14 +19,17 @@ public static partial class Briefing
     public static Completed RunCommand(IReadOnlyList<string> argv, string cwd, TimeSpan timeout) =>
         Shell.Run(argv[0], argv.Skip(1), timeout, workingDirectory: cwd, utf8: true);
 
-    public static List<Part> Gather(Config config, CommandRunner run) => config.Sections.Select(s =>
+    /// <summary>Each section's part. away: the away mode (0.4.0): sections marked when = "away" are left out unless it's
+    /// on, and {since} in a command's arguments is the previous session's day.</summary>
+    public static List<Part> Gather(Config config, CommandRunner run, AwayMode? away = null, DateTime? now = null) =>
+        config.Sections.Where(s => s.When != "away" || away?.On == true).Select(s =>
     {
         try
         {
             return s.Kind switch
             {
-                "command" => Command(config, s, run),
-                "files" => Files(config, s),
+                "command" => Command(config, s, run, (away ?? AwayMode.None).SinceText(now ?? DateTime.Now)),
+                "files" => Files(config, s, away?.Since),
                 _ => List(s),
             };
         }
@@ -37,10 +40,12 @@ public static partial class Briefing
     }).ToList();
 
     /// <summary>The briefing as text: the title, then each section that has something to say.</summary>
-    public static string Text(Config config, IReadOnlyList<Part> parts, DateTime now)
+    public static string Text(Config config, IReadOnlyList<Part> parts, DateTime now, AwayMode? away = null)
     {
         var text = new StringBuilder();
         text.Append(config.Title.Replace("{now}", now.ToString("ddd dd MMM HH:mm", CultureInfo.InvariantCulture), StringComparison.Ordinal)).Append("\n\n");
+        if (away?.On == true)
+            text.Append(away.Line()).Append("\n\n");
         foreach (var part in parts.Where(p => !p.Empty))
         {
             if (part.Error is { } error)
@@ -79,10 +84,12 @@ public static partial class Briefing
     /// <summary>A line per section for the person (0.3.0): its first line, or for a section with its own "## "
     /// headings (heading = none) those headings run together, or for heading = each a line per line; each cut short
     /// at 110 characters (before a "(" if there is one). Claude gets the whole briefing.</summary>
-    public static string Headlines(Config config, IReadOnlyList<Part> parts, DateTime now)
+    public static string Headlines(Config config, IReadOnlyList<Part> parts, DateTime now, AwayMode? away = null)
     {
         var text = new StringBuilder();
         text.Append(config.Title.Replace("{now}", now.ToString("ddd dd MMM HH:mm", CultureInfo.InvariantCulture), StringComparison.Ordinal)).Append('\n');
+        if (away?.On == true)
+            text.Append(away.Line()).Append('\n');
         foreach (var part in parts.Where(p => !p.Empty))
         {
             var name = part.Section.Name.Length > 0 ? char.ToUpperInvariant(part.Section.Name[0]) + part.Section.Name[1..] : "";
@@ -124,9 +131,10 @@ public static partial class Briefing
 
     // ---- command --------------------------------------------------------------------------------------------------
 
-    internal static Part Command(Config config, Section section, CommandRunner run)
+    internal static Part Command(Config config, Section section, CommandRunner run, string since = "")
     {
-        var done = run(section.Run, Path.GetDirectoryName(config.Path)!, TimeSpan.FromSeconds(section.TimeoutSeconds));
+        var argv = section.Run.Select(a => a.Replace("{since}", since, StringComparison.Ordinal)).ToList();
+        var done = run(argv, Path.GetDirectoryName(config.Path)!, TimeSpan.FromSeconds(section.TimeoutSeconds));
         if (!section.OkExit.Contains(done.ExitCode))
         {
             var said = (done.StandardError.Trim().Length > 0 ? done.StandardError : done.StandardOutput).Trim();
@@ -147,14 +155,17 @@ public static partial class Briefing
 
     /// <summary>Files whose frontmatter has every field in Where: "5, oldest 2026-11-12", then each file. Only the
     /// frontmatter is read (a file without it never matches a where), so a long one isn't cut short.</summary>
-    internal static Part Files(Config config, Section section)
+    internal static Part Files(Config config, Section section, DateTime? since = null)
     {
+        var from = section.Since && since is { } s ? s.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : null;
         var found = new List<(string Path, string Date)>();
         foreach (var file in section.Files.SelectMany(Glob).Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (section.Where.Count > 0 && !Matches(Frontmatter(file), section.Where))
                 continue;
             var date = Date().Match(Path.GetFileName(file));
+            if (from is not null && (!date.Success || string.CompareOrdinal(date.Value, from) < 0))
+                continue;
             found.Add((Shown(config, file), date.Success ? date.Value : ""));
         }
         if (found.Count == 0)

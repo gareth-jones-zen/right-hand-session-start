@@ -34,6 +34,7 @@ public static class Cli
         "heading). Part of right-hand.\n\n" +
         "    right-hand-session-start show        the briefing\n" +
         "        --json                           as JSON, a section at a time\n" +
+        "        --away                           as the first session after time away would show it\n" +
         "    right-hand-session-start hook        for a Claude Code SessionStart hook: reads the hook's JSON, and gives\n" +
         "                                         Claude the briefing (nothing in a headless run: skip_env)\n" +
         "    right-hand-session-start config      create the settings file (if missing) and say where it is\n\n" +
@@ -80,6 +81,7 @@ public static class Cli
             return 0;
         }
         var json = rest.Remove("--json");
+        var forceAway = command == "show" && rest.Remove("--away");
         if (command is not ("show" or "hook" or "config"))
             return Bad(host, $"argument command: invalid choice: '{command}' (choose from 'show', 'hook', 'config')");
         if (rest.Count > 0 || (json && command != "show"))
@@ -95,8 +97,12 @@ public static class Cli
             if (command == "hook")
                 return Hook(configPath, host);
             var config = RightHandSessionStart.Config.Load(configPath, host.Env);
-            var parts = Briefing.Gather(config, host.Run);
-            host.Out.Write(json ? Json(parts, host.Now()) : Briefing.Text(config, parts, host.Now()));
+            var now = host.Now();
+            var away = Away.Read(config, now);   // show only reads the record; the hook writes it
+            if (forceAway)
+                away = away with { On = true };
+            var parts = Briefing.Gather(config, host.Run, away, now);
+            host.Out.Write(json ? Json(parts, now, away) : Briefing.Text(config, parts, now, away));
             return 0;
         }
         catch (UsageException error)
@@ -140,9 +146,12 @@ public static class Cli
             if (config.SkipEnv.Any(name => host.Env(name) is { Length: > 0 }))
                 return 0;
             visible = config.Visible;
-            var parts = Briefing.Gather(config, host.Run);
-            text = Briefing.Text(config, parts, host.Now());
-            headlines = Briefing.Headlines(config, parts, host.Now());
+            var now = host.Now();
+            var away = Away.Read(config, now);
+            Away.Record(config, now, away);   // this session's start, before anything slow can fail
+            var parts = Briefing.Gather(config, host.Run, away, now);
+            text = Briefing.Text(config, parts, now, away);
+            headlines = Briefing.Headlines(config, parts, now, away);
         }
         catch (Exception error)
         {
@@ -160,7 +169,7 @@ public static class Cli
         return 0;
     }
 
-    internal static string Json(IReadOnlyList<Part> parts, DateTime now)
+    internal static string Json(IReadOnlyList<Part> parts, DateTime now, AwayMode? away = null)
     {
         var sections = new JsonArray();
         foreach (var part in parts)
@@ -173,7 +182,16 @@ public static class Cli
                 ["name"] = part.Section.Name, ["kind"] = part.Section.Kind, ["lines"] = lines, ["error"] = part.Error,
             });
         }
-        return Write(new JsonObject { ["at"] = now.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture), ["sections"] = sections }) + "\n";
+        return Write(new JsonObject
+        {
+            ["at"] = now.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture), ["sections"] = sections,
+            ["away"] = away?.On == true
+                ? new JsonObject
+                {
+                    ["since"] = away.Since?.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture), ["weekdays"] = away.Weekdays, ["line"] = away.Line(),
+                }
+                : null,
+        }) + "\n";
     }
 
     private static string Write(JsonNode node)

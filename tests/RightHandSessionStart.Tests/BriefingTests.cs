@@ -16,6 +16,8 @@ public sealed class BriefingTests : IDisposable
         ["broken"] = new(2, "", "settings: no such file"),
     };
     private readonly Dictionary<string, string?> env = new();
+    private DateTime now = new(2026, 11, 18, 19, 38, 0);
+    private readonly List<IReadOnlyList<string>> ran = [];
 
     private const string Settings = """
         root = "repo"
@@ -60,6 +62,7 @@ public sealed class BriefingTests : IDisposable
 
     public BriefingTests()
     {
+        env["LOCALAPPDATA"] = Path.Combine(dir, "local");   // the default state file goes here, not the real one
         Directory.CreateDirectory(Path.Combine(dir, "repo", "meetings", "a", "summaries"));
         Directory.CreateDirectory(Path.Combine(dir, "repo", "meetings", "b", "c", "summaries"));
         File.WriteAllText(Path.Combine(dir, "config.toml"), Settings);
@@ -89,9 +92,10 @@ public sealed class BriefingTests : IDisposable
         var code = Cli.Run(["--config", Path.Combine(dir, "config.toml"), .. args], new CliHost
         {
             Out = output, Err = errors, In = new StringReader(stdin), Env = name => env.GetValueOrDefault(name),
-            Now = () => new DateTime(2026, 11, 18, 19, 38, 0),
+            Now = () => now,
             Run = (argv, cwd, _) =>
             {
+                ran.Add(argv);
                 Assert.Equal(dir, cwd);   // commands run from the settings folder
                 return outputs[Path.GetFileName(argv[0])];
             },
@@ -185,8 +189,108 @@ public sealed class BriefingTests : IDisposable
         Assert.Equal(new string('x', 107) + "...", Briefing.Short(new string('x', 200)));
     }
 
+    private const string AwaySettings = """
+
+        [away]
+        after_working_days = 3
+
+        [[section]]
+        kind = "files"
+        name = "return pack"
+        when = "away"
+        since = true
+        files = ["repo/reviews/re-entry/????-??-??.md"]
+
+        [[section]]
+        kind = "command"
+        name = "deleted since"
+        when = "away"
+        run = ["mail", "deleted", "--since", "{since}"]
+        """;
+
+    private string? Context(string output) => (string?)JsonNode.Parse(output)!["hookSpecificOutput"]!["additionalContext"];
+
+    private string? Screen(string output) => (string?)JsonNode.Parse(output)!["systemMessage"];
+
+    [Fact]
+    public void After_three_weekdays_away_the_first_session_says_so_and_shows_the_away_sections()
+    {
+        File.WriteAllText(Path.Combine(dir, "config.toml"), Settings + AwaySettings);
+        Directory.CreateDirectory(Path.Combine(dir, "repo", "reviews", "re-entry"));
+        File.WriteAllText(Path.Combine(dir, "repo", "reviews", "re-entry", "2026-11-09.md"), "# an older pack");
+        File.WriteAllText(Path.Combine(dir, "repo", "reviews", "re-entry", "2027-01-04.md"), "# [DRAFT] Return pack");
+        File.WriteAllText(Path.Combine(dir, "repo", "reviews", "re-entry", "2026-12-16-before-you-go.md"), "# [DRAFT] Before you go");
+
+        now = new DateTime(2026, 12, 15, 17, 0, 0);   // the last session before the leave
+        var first = Run("{}", "hook").Out;
+        Assert.DoesNotContain("First session since", Context(first));
+        Assert.DoesNotContain("return pack", Context(first));
+        Assert.True(File.Exists(Path.Combine(dir, "local", "right-hand-session-start", "state.json")));
+
+        now = new DateTime(2027, 1, 4, 8, 5, 0);   // back: 16 Dec to 1 Jan is 13 weekdays
+        ran.Clear();
+        var back = Run("{}", "hook").Out;
+        Assert.StartsWith("Session start, Mon 04 Jan 08:05\n\nFirst session since Tue 15 Dec: 13 weekdays\n\n## preps (1)", Context(back));
+        Assert.Contains("## return pack: 1, oldest 2027-01-04\n   reviews/re-entry/2027-01-04.md\n", Context(back));   // since the last session; not the before-you-go
+        Assert.Contains(["mail", "deleted", "--since", "2026-12-15"], ran);
+        Assert.StartsWith("Session start, Mon 04 Jan 08:05\nFirst session since Tue 15 Dec: 13 weekdays\n- Pending: preps (1)", Screen(back));
+        Assert.Contains("- Return pack: 1, oldest 2027-01-04", Screen(back));
+
+        now = new DateTime(2027, 1, 4, 11, 0, 0);   // a /clear later that morning: still the first day back
+        Assert.Contains("First session since Tue 15 Dec: 13 weekdays", Context(Run("{}", "hook").Out));
+        now = new DateTime(2027, 1, 5, 9, 0, 0);    // the next day, ordinary again
+        var next = Context(Run("{}", "hook").Out);
+        Assert.DoesNotContain("First session since", next);
+        Assert.DoesNotContain("return pack", next);
+    }
+
+    [Fact]
+    public void A_weekend_or_two_days_is_not_away_and_show_only_reads()
+    {
+        File.WriteAllText(Path.Combine(dir, "config.toml"), Settings + AwaySettings);
+        now = new DateTime(2026, 11, 13, 17, 0, 0);   // Friday
+        Run("{}", "hook");
+        now = new DateTime(2026, 11, 16, 9, 0, 0);    // Monday: no weekdays missed
+        Assert.DoesNotContain("First session since", Context(Run("{}", "hook").Out));
+        now = new DateTime(2026, 11, 19, 9, 0, 0);    // Thursday: Tue and Wed missed
+        Assert.DoesNotContain("First session since", Run("", "show").Out);
+        now = new DateTime(2026, 11, 20, 9, 0, 0);    // Friday: three missed, and show didn't record Thursday
+        Assert.Contains("First session since Mon 16 Nov: 3 weekdays", Run("", "show").Out);
+        Assert.Contains("First session since Mon 16 Nov: 3 weekdays", Run("", "show").Out);   // still: show records nothing
+        var json = JsonNode.Parse(Run("", "show", "--json").Out)!;
+        Assert.Equal(3, (int?)json["away"]!["weekdays"]);
+        Assert.Equal("2026-11-16T09:00", (string?)json["away"]!["since"]);
+        // --away shows it as an away session whatever the gap; a headless run neither shows nor records anything.
+        now = new DateTime(2026, 11, 16, 10, 0, 0);
+        Assert.Contains("First session since Mon 16 Nov: 0 weekdays", Run("", "show", "--away").Out);
+        env["CLAUDE_HEADLESS"] = "1";
+        now = new DateTime(2026, 12, 1, 10, 0, 0);
+        Assert.Equal("", Run("{}", "hook").Out);
+        env.Remove("CLAUDE_HEADLESS");
+        Assert.Contains("First session since Mon 16 Nov: 10 weekdays", Context(Run("{}", "hook").Out));
+        Assert.Equal(2, Run("", "hook", "--away").Code);
+    }
+
+    [Fact]
+    public void Without_a_record_or_with_a_higher_threshold_it_is_an_ordinary_session()
+    {
+        File.WriteAllText(Path.Combine(dir, "config.toml"), Settings + AwaySettings.Replace("after_working_days = 3", "after_working_days = 5"));
+        Assert.DoesNotContain("First session", Context(Run("{}", "hook").Out));
+        now = now.AddDays(6);   // Wed 18 Nov to Tue 24 Nov: Thu, Fri, Mon missed
+        Assert.DoesNotContain("First session", Context(Run("{}", "hook").Out));
+        File.WriteAllText(Path.Combine(dir, "config.toml"), "state_file = \"elsewhere/state.json\"\n" + Settings);
+        Run("{}", "hook");
+        Assert.True(File.Exists(Path.Combine(dir, "elsewhere", "state.json")));
+        Assert.Equal([3, 1, 0], new[] { Away.WeekdaysBetween(new(2026, 11, 16), new(2026, 11, 20)), Away.WeekdaysBetween(new(2026, 11, 13), new(2026, 11, 17)),
+            Away.WeekdaysBetween(new(2026, 11, 13), new(2026, 11, 16)) });
+    }
+
     [Theory]
     [InlineData("[[section]]\nkind = \"shell\"\nname = \"x\"", "kind should be command, files or list")]
+    [InlineData("[[section]]\nkind = \"list\"\nname = \"x\"\nfile = \"a\"\nunder = \"b\"\nwhen = \"sometimes\"", "when should be always or away")]
+    [InlineData("[[section]]\nkind = \"command\"\nname = \"x\"\nrun = [\"a\"]\nsince = true", "unknown setting 'since'")]
+    [InlineData("[away]\nafter_working_days = 0", "after_working_days should be a whole number")]
+    [InlineData("[away]\ndays = 3", "[away] has an unknown setting 'days'")]
     [InlineData("[[section]]\nkind = \"command\"\nname = \"x\"\nrun = [\"a\"]\nheading = \"top\"", "heading should be inline, above, each or none")]
     [InlineData("[[section]]\nkind = \"list\"\nname = \"x\"\nfile = \"a\"\nunder = \"b\"\nrun = [\"c\"]", "unknown setting 'run'")]
     [InlineData("colour = \"red\"", "unknown setting 'colour'")]
