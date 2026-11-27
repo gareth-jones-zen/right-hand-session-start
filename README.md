@@ -39,6 +39,12 @@ without the briefing noticing, or going quietly wrong. There are three kinds of 
 A section that fails (a program missing, an exit code it didn't expect, a heading that isn't there) says so in its
 place; the rest still show.
 
+**The sections run at the same time (0.5.0)** and are shown in the settings' order, so the briefing takes as long as
+its slowest section, not the sum of them all (an unsigned program can be held for several seconds while Microsoft
+Defender asks the cloud about it, and with each tool started one after another those holds added up). Each keeps its
+own `timeout_seconds`. Give each section its own tool, as two sections running the same tool at once could meet in
+its files.
+
 ## Install
 
 1. Download `right-hand-session-start-<version>-win-x64.zip` from
@@ -84,6 +90,9 @@ so it's in the assistant's context when the session opens.
   say to open the first reply with it. `visible = "full"` shows you the whole briefing; `"none"`, nothing.
 - **It never blocks a session.** Settings it can't read, or anything else that goes wrong, become one line in the
   context saying so, and it exits 0.
+- **It logs how long it took (0.5.0)**: a line per interactive session in `log_file`, with the whole run and each
+  section in milliseconds (`hook 1840 ms: pending 120, mail triage 95, ...`), so a slow section can be found. Never
+  in the briefing. `show` writes nothing, so it doesn't log; `show --json` gives each section's `ms` instead.
 
 ## Away mode (0.4.0)
 
@@ -106,8 +115,8 @@ the record and never writes it, so trying it changes nothing; `show --away` show
 ## Commands
 
 ```
-right-hand-session-start show        the briefing (--json: a section at a time, with its lines and any error, and the
-                                     away mode; --away: as the first session after time away would show it)
+right-hand-session-start show        the briefing (--json: a section at a time, with its lines, any error and its time
+                                     in ms, and the away mode; --away: as the first session after time away would show it)
 right-hand-session-start hook        for a Claude Code SessionStart hook (above)
 right-hand-session-start config      create the settings file (if missing) and say where it is
 ```
@@ -126,6 +135,8 @@ skip_env = ["CLAUDE_HEADLESS"]     # hook: say nothing when one of these is set
 visible = "headlines"              # hook: what you see on screen: headlines, full or none (Claude gets it all)
 footer = "Say anything for the full briefing."   # hook: a line under the headlines
 state_file = "%LOCALAPPDATA%/right-hand-session-start/state.json"   # each session's start (this is the default)
+log_file = "%LOCALAPPDATA%/right-hand-session-start/right-hand-session-start.log"   # hook: a line per session with each
+                                   # section's time (the default: right-hand-session-start.log beside state_file)
 
 [away]
 after_working_days = 3             # the first session after at least this many weekdays without one is in away mode

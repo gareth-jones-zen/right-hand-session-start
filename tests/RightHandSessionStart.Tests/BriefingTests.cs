@@ -95,7 +95,8 @@ public sealed class BriefingTests : IDisposable
             Now = () => now,
             Run = (argv, cwd, _) =>
             {
-                ran.Add(argv);
+                lock (ran)   // the sections run at the same time (0.5.0)
+                    ran.Add(argv);
                 Assert.Equal(dir, cwd);   // commands run from the settings folder
                 return outputs[Path.GetFileName(argv[0])];
             },
@@ -174,6 +175,95 @@ public sealed class BriefingTests : IDisposable
         Assert.Equal(["2, oldest 2026-11-12", "   meetings/a/summaries/2026-11-12-long.md", "   meetings/b/c/summaries/2026-11-16.md"],
             sections[2]!["lines"]!.AsArray().Select(n => (string?)n));
         Assert.Empty(sections[5]!["lines"]!.AsArray());
+    }
+
+    private const string TimedSettings = """
+        [[section]]
+        kind = "command"
+        name = "slow"
+        run = ["slow"]
+
+        [[section]]
+        kind = "command"
+        name = "fast"
+        run = ["fast"]
+
+        [[section]]
+        kind = "list"
+        name = "ledger"
+        file = "repo/ledger.md"
+        under = "Open"
+
+        [[section]]
+        kind = "command"
+        name = "medium"
+        run = ["medium"]
+        """;
+
+    [Fact]
+    public void Sections_run_at_the_same_time_and_keep_their_order()
+    {
+        File.WriteAllText(Path.Combine(dir, "config.toml"), TimedSettings);
+        var config = Config.Load(Path.Combine(dir, "config.toml"), name => env.GetValueOrDefault(name));
+        var delays = new Dictionary<string, int> { ["slow"] = 1500, ["fast"] = 0, ["medium"] = 700 };
+        int running = 0, most = 0;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var parts = Briefing.Gather(config, (argv, _, _) =>
+        {
+            var now = Interlocked.Increment(ref running);
+            lock (delays)
+                most = Math.Max(most, now);
+            Thread.Sleep(delays[argv[0]]);
+            Interlocked.Decrement(ref running);
+            return new Completed(0, $"{argv[0]} said\n", "");
+        });
+        var total = clock.Elapsed;
+
+        Assert.Equal(["slow", "fast", "ledger", "medium"], parts.Select(p => p.Section.Name));   // the settings' order, not the finishing order
+        Assert.Equal(["slow said", "fast said", "2", "medium said"], parts.Select(p => p.Lines[0]));
+        Assert.Equal(3, most);   // the three commands were running at once
+        // The slow one holds up nothing but itself: the briefing takes about as long as it, not the sum (2.2 s).
+        Assert.True(total < TimeSpan.FromMilliseconds(2100), $"took {total.TotalMilliseconds} ms");
+        Assert.True(parts[1].Elapsed < TimeSpan.FromMilliseconds(600), $"fast took {parts[1].Elapsed.TotalMilliseconds} ms");
+        Assert.True(parts[3].Elapsed < TimeSpan.FromMilliseconds(1300), $"medium took {parts[3].Elapsed.TotalMilliseconds} ms");
+        Assert.True(parts[0].Elapsed >= TimeSpan.FromMilliseconds(1400));
+    }
+
+    [Fact]
+    public void A_failing_or_timed_out_section_running_alongside_the_others_is_its_own_error()
+    {
+        File.WriteAllText(Path.Combine(dir, "config.toml"), TimedSettings);
+        var config = Config.Load(Path.Combine(dir, "config.toml"), name => env.GetValueOrDefault(name));
+        var parts = Briefing.Gather(config, (argv, _, timeout) =>
+        {
+            Assert.Equal(TimeSpan.FromSeconds(120), timeout);   // each keeps its own timeout
+            return argv[0] == "slow" ? throw new TimeoutException("slow didn't finish") : new Completed(0, $"{argv[0]} said\n", "");
+        });
+        Assert.Equal("TimeoutException: slow didn't finish", parts[0].Error);
+        Assert.Equal(["fast said"], parts[1].Lines);
+        Assert.Equal(["medium said"], parts[3].Lines);
+    }
+
+    [Fact]
+    public void The_hook_logs_how_long_it_and_each_section_took_and_show_does_not()
+    {
+        var log = Path.Combine(dir, "local", "right-hand-session-start", "right-hand-session-start.log");   // beside the default state file
+        Run("", "show");
+        Assert.False(File.Exists(log));   // show writes nothing
+        var json = JsonNode.Parse(Run("", "show", "--json").Out)!;
+        Assert.All(json["sections"]!.AsArray(), s => Assert.True((long?)s!["ms"] >= 0));
+
+        var output = Run("{}", "hook").Out;
+        Assert.DoesNotContain(" ms", Context(output));   // never in the briefing
+        Assert.Matches(@"^2026-11-18 19:38:00  hook \d+ ms: pending \d+, mail triage \d+, summary drafts to review \d+, review ledger \d+, watchdog \d+, due \d+\r\n$",
+            File.ReadAllText(log));
+        Run("{}", "hook");
+        Assert.Equal(2, File.ReadAllLines(log).Length);   // a line per session
+
+        File.WriteAllText(Path.Combine(dir, "config.toml"), "log_file = \"logs/briefing.log\"\n" + Settings);
+        Run("{}", "hook");
+        Assert.True(File.Exists(Path.Combine(dir, "logs", "briefing.log")));
+        Assert.Equal(2, File.ReadAllLines(log).Length);
     }
 
     [Theory]

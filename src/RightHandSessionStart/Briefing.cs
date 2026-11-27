@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -5,10 +6,13 @@ using WinBackground;
 
 namespace RightHandSessionStart;
 
-/// <summary>What one section came to: the lines to show (empty: nothing to say, so it's left out), or an error.</summary>
+/// <summary>What one section came to: the lines to show (empty: nothing to say, so it's left out), or an error; and
+/// how long it took (0.5.0, for the hook's log line).</summary>
 public sealed record Part(Section Section, IReadOnlyList<string> Lines, string? Error = null)
 {
     public bool Empty => Error is null && Lines.Count == 0;
+
+    public TimeSpan Elapsed { get; init; }
 }
 
 /// <summary>Runs a command for a section: the program, its arguments, the folder to run in, a timeout.</summary>
@@ -19,25 +23,49 @@ public static partial class Briefing
     public static Completed RunCommand(IReadOnlyList<string> argv, string cwd, TimeSpan timeout) =>
         Shell.Run(argv[0], argv.Skip(1), timeout, workingDirectory: cwd, utf8: true);
 
-    /// <summary>Each section's part. away: the away mode (0.4.0): sections marked when = "away" are left out unless it's
-    /// on, and {since} in a command's arguments is the previous session's day.</summary>
-    public static List<Part> Gather(Config config, CommandRunner run, AwayMode? away = null, DateTime? now = null) =>
-        config.Sections.Where(s => s.When != "away" || away?.On == true).Select(s =>
+    /// <summary>Each section's part, in the settings' order. away: the away mode (0.4.0): sections marked when = "away"
+    /// are left out unless it's on, and {since} in a command's arguments is the previous session's day.
+    /// <para>The sections run at the same time (0.5.0), each on its own thread (not the thread pool, which adds threads
+    /// slowly), so the briefing takes as long as its slowest section rather than the sum of them all: a program Defender
+    /// holds for a cloud check no longer holds up the rest. Each keeps its own timeout and its own error. The briefing
+    /// itself writes nothing while they run (the hook records the session's start before, and logs after), so two
+    /// sections can only meet in a file if two of them run the same tool, which the settings shouldn't do.</para></summary>
+    public static List<Part> Gather(Config config, CommandRunner run, AwayMode? away = null, DateTime? now = null)
     {
+        var since = (away ?? AwayMode.None).SinceText(now ?? DateTime.Now);
+        var tasks = config.Sections.Where(s => s.When != "away" || away?.On == true)
+            .Select(s => Task.Factory.StartNew(() => One(config, s, run, since, away), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default))
+            .ToArray();
+        Task.WaitAll(tasks);
+        return tasks.Select(t => t.Result).ToList();
+    }
+
+    private static Part One(Config config, Section s, CommandRunner run, string since, AwayMode? away)
+    {
+        var clock = Stopwatch.StartNew();
+        Part part;
         try
         {
-            return s.Kind switch
+            part = s.Kind switch
             {
-                "command" => Command(config, s, run, (away ?? AwayMode.None).SinceText(now ?? DateTime.Now)),
+                "command" => Command(config, s, run, since),
                 "files" => Files(config, s, away?.Since),
                 _ => List(s),
             };
         }
         catch (Exception error)
         {
-            return new Part(s, [], $"{error.GetType().Name}: {error.Message}");
+            part = new Part(s, [], $"{error.GetType().Name}: {error.Message}");
         }
-    }).ToList();
+        return part with { Elapsed = clock.Elapsed };
+    }
+
+    /// <summary>The hook's log line (0.5.0): the whole run and each section, in milliseconds.
+    /// "hook 1840 ms: pending 120, mail triage 95, ...".</summary>
+    public static string Timing(string what, TimeSpan total, IReadOnlyList<Part> parts) =>
+        $"{what} {Ms(total)} ms: " + (parts.Count == 0 ? "no sections" : string.Join(", ", parts.Select(p => $"{p.Section.Name} {Ms(p.Elapsed)}")));
+
+    internal static long Ms(TimeSpan time) => (long)Math.Round(time.TotalMilliseconds);
 
     /// <summary>The briefing as text: the title, then each section that has something to say.</summary>
     public static string Text(Config config, IReadOnlyList<Part> parts, DateTime now, AwayMode? away = null)

@@ -52,6 +52,7 @@ public sealed class Config
         "# skip_env = [\"CLAUDE_HEADLESS\"] # hook: say nothing when one of these is set (a tool's headless run)\n" +
         "# visible = \"headlines\"        # hook: what you see on screen: headlines, full or none (Claude gets it all)\n" +
         "# state_file = \"state.json\"     # where each session's start is recorded (default: %LOCALAPPDATA%\\right-hand-session-start)\n" +
+        "# log_file = \"session-start.log\" # hook: a line per session with each section's time (default: beside state_file)\n" +
         "\n" +
         "# [away]\n" +
         "# after_working_days = 3        # the first session after this many weekdays without one is \"away\"\n" +
@@ -63,10 +64,14 @@ public sealed class Config
         "heading = \"each\"                # inline, above, each or none\n" +
         "drop_lines = [\"Nothing due.\"]   # lines that mean there's nothing to say\n";
 
-    public static readonly string[] KnownKeys = ["root", "skip_env", "title", "visible", "footer", "section", "state_file", "away"];
+    public static readonly string[] KnownKeys = ["root", "skip_env", "title", "visible", "footer", "section", "state_file", "away", "log_file"];
 
     /// <summary>Where the hook records each interactive session's start (0.4.0).</summary>
     public required string StateFile { get; init; }
+
+    /// <summary>The hook's log (0.5.0): a line per interactive session, with how long it and each section took.
+    /// Default: right-hand-session-start.log beside the state file.</summary>
+    public required string LogFile { get; init; }
 
     /// <summary>[away] after_working_days: the first session after at least this many weekdays without one is in away
     /// mode (0.4.0).</summary>
@@ -237,6 +242,9 @@ public sealed class Config
                 }
             }
         }
+        var stateFile = raw.TryGetValue("state_file", out var sf)
+            ? sf is string { Length: > 0 } state ? Resolve(state) : throw new UsageException($"{full}: state_file should be text.")
+            : DefaultState(vars);
         return new Config
         {
             Path = full,
@@ -254,9 +262,10 @@ public sealed class Config
                 ? se is TomlArray names && names.All(x => x is string) ? names.Cast<string>().ToList() : throw new UsageException($"{full}: skip_env should be a list of variable names.")
                 : ["CLAUDE_HEADLESS"],
             Sections = sections,
-            StateFile = raw.TryGetValue("state_file", out var sf)
-                ? sf is string { Length: > 0 } state ? Resolve(state) : throw new UsageException($"{full}: state_file should be text.")
-                : DefaultState(vars),
+            StateFile = stateFile,
+            LogFile = raw.TryGetValue("log_file", out var lf)
+                ? lf is string { Length: > 0 } log ? Resolve(log) : throw new UsageException($"{full}: log_file should be text.")
+                : System.IO.Path.Combine(System.IO.Path.GetDirectoryName(stateFile)!, "right-hand-session-start.log"),
             AwayAfterWorkingDays = AwayDays(raw, full),
             Resolve = Resolve,
             Expand = Expand,

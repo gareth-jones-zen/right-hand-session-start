@@ -1,9 +1,11 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using WinBackground;
 
 namespace RightHandSessionStart;
 
@@ -130,6 +132,7 @@ public static class Cli
     /// wrong, become a line in the context saying so, and it exits 0.</summary>
     private static int Hook(string? configPath, CliHost host)
     {
+        var clock = Stopwatch.StartNew();
         try
         {
             host.In.ReadToEnd();   // the hook's JSON (session id, source...): not needed, but read so the writer isn't blocked
@@ -140,6 +143,7 @@ public static class Cli
         string text;
         var visible = "headlines";
         string? headlines = null;
+        Action? log = null;
         try
         {
             var config = RightHandSessionStart.Config.Load(configPath, host.Env);
@@ -152,6 +156,8 @@ public static class Cli
             var parts = Briefing.Gather(config, host.Run, away, now);
             text = Briefing.Text(config, parts, now, away);
             headlines = Briefing.Headlines(config, parts, now, away);
+            // A line in the log (0.5.0): how long the hook and each section took, never in the briefing itself.
+            log = () => Logger.Create(config.LogFile, clock: host.Now)(Briefing.Timing("hook", clock.Elapsed, parts));
         }
         catch (Exception error)
         {
@@ -166,6 +172,8 @@ public static class Cli
         if (visible != "none")   // shown to the person, on screen: the headlines (0.3.0) or the whole briefing (0.2.0)
             output["systemMessage"] = (visible == "full" || headlines is null ? text : headlines).TrimEnd('\n');
         host.Out.Write(Write(output) + "\n");
+        host.Out.Flush();
+        log?.Invoke();   // after the briefing is written, so the time includes it and the log never delays it
         return 0;
     }
 
@@ -180,6 +188,7 @@ public static class Cli
             sections.Add((JsonNode)new JsonObject
             {
                 ["name"] = part.Section.Name, ["kind"] = part.Section.Kind, ["lines"] = lines, ["error"] = part.Error,
+                ["ms"] = Briefing.Ms(part.Elapsed),
             });
         }
         return Write(new JsonObject
