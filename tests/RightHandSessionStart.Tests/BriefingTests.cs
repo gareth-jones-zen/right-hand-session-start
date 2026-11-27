@@ -205,7 +205,7 @@ public sealed class BriefingTests : IDisposable
     {
         File.WriteAllText(Path.Combine(dir, "config.toml"), TimedSettings);
         var config = Config.Load(Path.Combine(dir, "config.toml"), name => env.GetValueOrDefault(name));
-        var delays = new Dictionary<string, int> { ["slow"] = 1500, ["fast"] = 0, ["medium"] = 700 };
+        var delays = new Dictionary<string, int> { ["slow"] = 1500, ["fast"] = 200, ["medium"] = 700 };
         int running = 0, most = 0;
         var clock = System.Diagnostics.Stopwatch.StartNew();
         var parts = Briefing.Gather(config, (argv, _, _) =>
